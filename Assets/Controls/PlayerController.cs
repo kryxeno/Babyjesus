@@ -24,6 +24,8 @@ public class PlayerController : MonoBehaviour
     public float moveSpeed;
     public float maxMoveSpeed;
     public float groundDrag;
+    private float lastDesiredMoveSpeed;
+    private float desiredMoveSpeed;
 
     public float jumpForce;
     private float lastJumpTime = 0f;
@@ -54,6 +56,8 @@ public class PlayerController : MonoBehaviour
     public float slideForce;
     public float maxSlideSpeed;
     private bool isSliding;
+    public float maxSlideTime;
+    private float slideTimer;
 
     [Header("Air movement")]
     public float airMultiplier;
@@ -69,6 +73,10 @@ public class PlayerController : MonoBehaviour
     public bool isWallRunning;
     private float wallRunTimer;
 
+    //Wall jumping
+    public float wallJumpUpForce;
+    public float wallJumpSideForce;
+
     //Wall Dettection
     public float wallCheckDistance;
     public float minJumpHeight;
@@ -77,6 +85,10 @@ public class PlayerController : MonoBehaviour
     public bool wallLeft;
     public bool wallRight;
 
+    //Wall exiting
+    private bool exitingWall;
+    public float exitWalltime;
+    private float exitWallTimer;
 
 
     [Header("States")]
@@ -116,21 +128,31 @@ public class PlayerController : MonoBehaviour
         jump.Enable();
         jump.performed += Jump;
         jump.performed += StartWallRun;
-        jump.canceled += StopWallRun;
+        jump.canceled += CancelWallRun;
+        jump.canceled += WallJump;
 
         crouch = playerInputActions.Player.Crouch;
         crouch.Enable();
         crouch.performed += Crouch;
         crouch.performed += StartSlide;
         crouch.canceled += StopCrouch;
-        crouch.canceled += StopSlide;
+        crouch.canceled += CancelSlide;
     }
 
     private void OnDisable()
     {
         move.Disable();
+
         jump.Disable();
+        jump.performed -= Jump;
+        jump.performed -= StartWallRun;
+        jump.canceled -= CancelWallRun;
+        
         crouch.Disable();
+        crouch.performed -= Crouch;
+        crouch.performed -= StartSlide;
+        crouch.canceled -= StopCrouch;
+        crouch.canceled -= CancelSlide;
     }
 
 
@@ -153,12 +175,6 @@ public class PlayerController : MonoBehaviour
         }
 
         jumpbufferCounter -= Time.deltaTime;
-
-        if (isSliding)
-        {
-
-        }
-
         
     }
 
@@ -187,18 +203,35 @@ public class PlayerController : MonoBehaviour
 
     private void StateHandler()
     {
+        if (exitingWall)
+        {
+            if (isWallRunning)
+                StopWallRun();
+
+            if (exitWallTimer > 0)
+                exitWallTimer -= Time.deltaTime;
+            else
+                exitingWall = false;
+        }
 
         //Mode - Wallrunning
-        if (isWallRunning)
+        else if (isWallRunning)
         {
             state = MovementState.wallrunning;
-            maxSpeed = maxWallrunSpeed;
+            desiredMoveSpeed = maxWallrunSpeed;
+            if (wallRunTimer > 0)
+                wallRunTimer -= Time.deltaTime;
+            else
+                StopWallRun();
+            if (!wallLeft && !wallRight)
+                StopWallRun();
         }
+
         //Mode - Air
         else if (!grounded)
         {
             state = MovementState.air;
-            maxSpeed = maxAirSpeed;
+            desiredMoveSpeed = maxAirSpeed;
         }
         
         //Mode - Crouching and sliding
@@ -207,12 +240,17 @@ public class PlayerController : MonoBehaviour
             if (isSliding)
             {
                 state = MovementState.sliding;
-                maxSpeed = maxSlideSpeed;
+                desiredMoveSpeed = maxSlideSpeed;
+
+                if (slideTimer > 0)
+                    slideTimer -= Time.deltaTime;
+                else
+                    StopSlide();
             }
             else
             {
                 state = MovementState.crouching;
-                maxSpeed = maxCrouchSpeed;
+                desiredMoveSpeed = maxCrouchSpeed;
             }
         }
         
@@ -220,8 +258,18 @@ public class PlayerController : MonoBehaviour
         else
         {
             state = MovementState.walking;
-            maxSpeed = maxMoveSpeed;
+            desiredMoveSpeed = maxMoveSpeed;
         }
+
+        if (Mathf.Abs(desiredMoveSpeed - lastDesiredMoveSpeed) > 2f && maxSpeed != 0)
+        {
+            StopAllCoroutines();
+            StartCoroutine(SmoothlyLerpMoveSpeed());
+        }
+        else
+            maxSpeed = desiredMoveSpeed;
+
+        lastDesiredMoveSpeed = desiredMoveSpeed;
     }
 
     //Basic movement group
@@ -283,6 +331,21 @@ public class PlayerController : MonoBehaviour
         }
     }
 
+    private IEnumerator SmoothlyLerpMoveSpeed()
+    {
+        float time = 0;
+        float difference = Mathf.Abs(desiredMoveSpeed - maxSpeed);
+        float startValue = maxSpeed;
+
+        while (time < difference)
+        {
+            maxSpeed = Mathf.Lerp(startValue, desiredMoveSpeed, time / difference);
+            time += Time.deltaTime;
+            yield return null;
+        }
+
+        maxSpeed = desiredMoveSpeed;
+    }
 
     //Jumping group
     private void Jump(InputAction.CallbackContext context)
@@ -322,6 +385,7 @@ public class PlayerController : MonoBehaviour
         if ((rb.velocity.magnitude > minSlideSpeed || OnSlope()) && grounded)
         {
             isSliding = true;
+            slideTimer = maxSlideTime;
         }
     }
 
@@ -331,10 +395,16 @@ public class PlayerController : MonoBehaviour
         rb.AddForce(moveDirection.normalized * slideForce, ForceMode.Force);
     }
 
-    private void StopSlide(InputAction.CallbackContext context)
+    private void StopSlide()
     {
         if (isSliding)
         isSliding = false;
+    }
+
+    private void CancelSlide(InputAction.CallbackContext context)
+    {
+        if (isSliding)
+            isSliding = false;
     }
 
     //Wallrunning things
@@ -348,15 +418,23 @@ public class PlayerController : MonoBehaviour
 
     private void StartWallRun(InputAction.CallbackContext context)
     {
-        if (wallLeft || wallRight)
+        if (wallLeft || wallRight && !exitingWall && !grounded)
         {
             isWallRunning = true;
+            wallRunTimer = maxWallRunTime;
+            rb.useGravity = false;
+            rb.velocity = new Vector3(rb.velocity.x, 0f, rb.velocity.y);
         }
         
     }
 
     private void WallRun()
     {
+        if (!wallLeft && !wallRight)
+        {
+            
+        }
+
         Vector3 wallNormal = wallRight ? rightWallHit.normal : leftWallHit.normal;
 
         Vector3 wallForward = Vector3.Cross(wallNormal, transform.up);
@@ -370,9 +448,34 @@ public class PlayerController : MonoBehaviour
         rb.AddForce(wallForward * wallRunForce, ForceMode.Force);
     }
 
-    private void StopWallRun(InputAction.CallbackContext context)
+    private void CancelWallRun(InputAction.CallbackContext context)
     {
         isWallRunning = false;
+        rb.useGravity = true;
+    }
+
+    private void StopWallRun()
+    {
+        isWallRunning = false;
+        rb.useGravity = true;
+    }
+
+    private void WallJump(InputAction.CallbackContext context)
+    {
+        if (state == MovementState.wallrunning && (wallLeft || wallRight))
+        {
+            // exiting state
+            exitingWall = true;
+            exitWallTimer = exitWalltime;
+
+            Vector3 wallNormal = wallRight ? rightWallHit.normal : leftWallHit.normal;
+
+            Vector3 forceToApply = transform.up * wallJumpUpForce + wallNormal * wallJumpSideForce;
+
+            rb.velocity = new Vector3(rb.velocity.x, 0f, rb.velocity.z);
+            rb.AddForce(forceToApply, ForceMode.Impulse);
+        }
+        
     }
 
     private bool OnSlope()
